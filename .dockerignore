@@ -1,0 +1,14 @@
+.git
+.github
+**/node_modules
+**/dist
+**/.vscode
+**/.idea
+data/
+*.db
+README.md
+LICENSE
+scripts/
+uwp/
+backend/data/
+backend/bin/
