@@ -7,15 +7,15 @@ RUN npm run build
 
 FROM golang:1.25-alpine AS backend
 WORKDIR /src
-RUN apk add --no-cache git
+RUN apk add --no-cache git build-base sqlite-dev
 COPY backend/go.mod backend/go.sum ./backend/
 RUN cd backend && go mod download
 COPY backend/ ./backend/
-RUN cd backend && CGO_ENABLED=0 GOOS=linux \
+RUN cd backend && CGO_ENABLED=1 GOOS=linux \
     go build -ldflags="-s -w" -o /out/webpanel ./cmd/server
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata \
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs \
  && addgroup -S panel && adduser -S -G panel panel
 WORKDIR /app
 COPY --from=backend  /out/webpanel        ./webpanel
