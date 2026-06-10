@@ -116,20 +116,39 @@ func checkAndCreateAdminUser(cfg *config.Config) {
 	}
 
 	if count == 0 {
-		// Create default admin user
+		// Create default admin user. Allow Coolify / docker-compose to
+		// override the credentials via env so first boot doesn't need
+		// the admin/admin123 round-trip + manual password change.
 		log.Println("No users found. Creating default admin user...")
+
+		adminUser := envOr("WEBPANEL_ADMIN_USER", "admin")
+		adminEmail := envOr("WEBPANEL_ADMIN_EMAIL", "admin@localhost")
+		adminPass := envOr("WEBPANEL_ADMIN_PASSWORD", "admin123")
 
 		// Get Super-Admin role
 		var roleID uint = 1 // Default to first role (Super-Admin)
 
-		user, err := auth.CreateUser("admin", "admin@localhost", "admin123", "Admin", "User", roleID)
+		user, err := auth.CreateUser(adminUser, adminEmail, adminPass, "Admin", "User", roleID)
 		if err != nil {
 			log.Printf("Warning: Could not create default admin user: %v", err)
 		} else {
-			fmt.Printf("Created default admin user: %s (password: admin123)\n", user.Username)
-			fmt.Println("Please change this password immediately!")
+			passwordHint := "admin123"
+			if adminPass != "admin123" {
+				passwordHint = "(from WEBPANEL_ADMIN_PASSWORD env)"
+			}
+			fmt.Printf("Created default admin user: %s (password: %s)\n", user.Username, passwordHint)
+			if passwordHint == "admin123" {
+				fmt.Println("Please change this password immediately!")
+			}
 		}
 	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // seedRPCServerFromEnv adds an RPCServer entry to cfg if UNREAL_RPC_URL,
