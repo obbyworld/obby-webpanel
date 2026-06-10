@@ -26,8 +26,17 @@ func main() {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
-	// Load configuration
-	cfg, err := config.Load("config.json")
+	// config.json holds the argon2 pepper, JWT secret and the RPC
+	// server list -- it MUST live on the persistent volume or every
+	// container restart regenerates the pepper and every existing
+	// admin password hash becomes unverifiable. /app/data is the
+	// declared volume; if a legacy config.json still sits in the
+	// working directory, migrate it over so first-restart accounts
+	// keep working. WEBPANEL_CONFIG_PATH overrides this for tests.
+	configPath := envOr("WEBPANEL_CONFIG_PATH", "data/config.json")
+	migrateLegacyConfig(configPath)
+
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Printf("Warning: Could not load config file: %v", err)
 	}
@@ -42,7 +51,7 @@ func main() {
 		cfg.Auth.PasswordPepper = pepper
 		cfg.Auth.EncryptionKey = encKey
 
-		if err := config.Save("config.json"); err != nil {
+		if err := config.Save(configPath); err != nil {
 			log.Printf("Warning: Could not save config: %v", err)
 		}
 	}
@@ -149,6 +158,45 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// migrateLegacyConfig moves a config.json left in the working directory
+// (pre-volume-aware builds wrote it there, so it'd vanish on restart and
+// take the argon2 pepper with it) into the volume-backed location. If
+// dst already exists we leave both files alone -- the volume copy is
+// authoritative and the working-dir copy is stale.
+func migrateLegacyConfig(dst string) {
+	const legacy = "config.json"
+	if _, err := os.Stat(dst); err == nil {
+		return
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepathDir(dst), 0755); err != nil {
+		log.Printf("config-migrate: mkdir %s: %v", filepathDir(dst), err)
+		return
+	}
+	in, err := os.ReadFile(legacy)
+	if err != nil {
+		log.Printf("config-migrate: read %s: %v", legacy, err)
+		return
+	}
+	if err := os.WriteFile(dst, in, 0600); err != nil {
+		log.Printf("config-migrate: write %s: %v", dst, err)
+		return
+	}
+	log.Printf("config-migrate: copied %s -> %s (pepper + JWT secret preserved across restart)", legacy, dst)
+}
+
+// filepathDir avoids pulling in path/filepath just for one helper.
+func filepathDir(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' {
+			return p[:i]
+		}
+	}
+	return "."
 }
 
 // seedRPCServerFromEnv adds an RPCServer entry to cfg if UNREAL_RPC_URL,

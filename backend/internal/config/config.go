@@ -48,14 +48,17 @@ type RPCServer struct {
 }
 
 var (
-	cfg  *Config
-	once sync.Once
+	cfg     *Config
+	cfgPath string
+	once    sync.Once
 )
 
-// Load loads the configuration from file
+// Load loads the configuration from file and remembers the path so
+// later Save calls don't need it threaded through every call site.
 func Load(path string) (*Config, error) {
 	var err error
 	once.Do(func() {
+		cfgPath = path
 		cfg = &Config{
 			Server: ServerConfig{
 				Host: "0.0.0.0",
@@ -96,8 +99,14 @@ func Get() *Config {
 	return cfg
 }
 
-// Save saves the configuration to file
+// Save persists the current configuration. If the caller passes the
+// legacy bare "config.json" we redirect to the path Load was given,
+// so existing call sites keep working even when the on-disk file
+// moved to the persistent /app/data volume.
 func Save(path string) error {
+	if path == "config.json" && cfgPath != "" {
+		path = cfgPath
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
