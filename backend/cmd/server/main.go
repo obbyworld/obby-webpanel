@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/ValwareIRC/unrealircd-webpanel-2/internal/api/routes"
@@ -56,6 +58,11 @@ func main() {
 
 	// Check if admin user needs to be created
 	checkAndCreateAdminUser(cfg)
+
+	// Seed an RPC server from environment variables (Coolify / docker-compose).
+	// Idempotent: an existing entry with the same name or (host, port, user)
+	// triple is left alone, so editing it in the UI sticks across restarts.
+	seedRPCServerFromEnv(cfg)
 
 	// Connect to RPC servers
 	connectToRPCServers(cfg)
@@ -123,6 +130,109 @@ func checkAndCreateAdminUser(cfg *config.Config) {
 			fmt.Println("Please change this password immediately!")
 		}
 	}
+}
+
+// seedRPCServerFromEnv adds an RPCServer entry to cfg if UNREAL_RPC_URL,
+// UNREAL_RPC_USERNAME and UNREAL_RPC_PASSWORD are all set in the
+// environment and no matching server already exists. URL accepts the
+// ws://host[:port]/, wss://host[:port]/, http(s)://, or bare host[:port]
+// forms; missing port defaults to 8080. If no default RPC server is
+// configured yet, the seeded one becomes the default.
+func seedRPCServerFromEnv(cfg *config.Config) {
+	rawURL := os.Getenv("UNREAL_RPC_URL")
+	user := os.Getenv("UNREAL_RPC_USERNAME")
+	pass := os.Getenv("UNREAL_RPC_PASSWORD")
+	if rawURL == "" || user == "" || pass == "" {
+		return
+	}
+	name := os.Getenv("UNREAL_RPC_NAME")
+	if name == "" {
+		name = "default"
+	}
+
+	host, port, tls, err := parseRPCEndpoint(rawURL)
+	if err != nil {
+		log.Printf("env-seed: ignoring UNREAL_RPC_URL=%q: %v", rawURL, err)
+		return
+	}
+
+	for _, s := range cfg.RPC {
+		if s.Name == name {
+			return
+		}
+		if s.Host == host && s.Port == port && s.User == user {
+			return
+		}
+	}
+
+	hasDefault := false
+	for _, s := range cfg.RPC {
+		if s.IsDefault {
+			hasDefault = true
+			break
+		}
+	}
+
+	cfg.RPC = append(cfg.RPC, config.RPCServer{
+		Name:          name,
+		Host:          host,
+		Port:          port,
+		User:          user,
+		Password:      pass,
+		TLSVerifyCert: tls,
+		IsDefault:     !hasDefault,
+	})
+
+	if err := config.Save("config.json"); err != nil {
+		log.Printf("env-seed: failed to persist seeded RPC server %q: %v", name, err)
+		return
+	}
+
+	log.Printf("env-seed: added RPC server %q -> %s:%d (user=%s tls=%v default=%v)",
+		name, host, port, user, tls, !hasDefault)
+}
+
+func parseRPCEndpoint(raw string) (host string, port int, tls bool, err error) {
+	port = 8080
+	parsed, parseErr := url.Parse(raw)
+	if parseErr == nil && parsed.Host != "" {
+		host = parsed.Hostname()
+		switch parsed.Scheme {
+		case "wss", "https":
+			tls = true
+		}
+		if p := parsed.Port(); p != "" {
+			n, convErr := strconv.Atoi(p)
+			if convErr != nil {
+				return "", 0, false, fmt.Errorf("non-numeric port %q", p)
+			}
+			port = n
+		}
+		return host, port, tls, nil
+	}
+	// Bare host[:port]
+	host = raw
+	if colon := indexOf(raw, ':'); colon != -1 {
+		host = raw[:colon]
+		n, convErr := strconv.Atoi(raw[colon+1:])
+		if convErr != nil {
+			return "", 0, false, fmt.Errorf("non-numeric port %q", raw[colon+1:])
+		}
+		port = n
+	}
+	if host == "" {
+		return "", 0, false, fmt.Errorf("empty host")
+	}
+	return host, port, false, nil
+}
+
+func indexOf(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }
 
 func connectToRPCServers(cfg *config.Config) {
